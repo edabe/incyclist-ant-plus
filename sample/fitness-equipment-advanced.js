@@ -1,5 +1,5 @@
-const {FitnessEquipmentSensor} = require('incyclist-ant-plus');
-const {AntDevice,AntServerBinding} = require('incyclist-ant-plus/lib/bindings')
+const {FitnessEquipmentSensor} = require('../lib');
+const {AntDevice,AntServerBinding} = require('../lib/bindings')
 
 
 const os = require('os')

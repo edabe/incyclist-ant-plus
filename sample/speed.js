@@ -1,5 +1,5 @@
-const { SpeedSensor } = require('incyclist-ant-plus');
-const { AntDevice } = require('incyclist-ant-plus/lib/bindings')
+const { SpeedSensor } = require('../lib');
+const { AntDevice } = require('../lib/bindings')
 
 const ant = new AntDevice({ startupTimeout: 2000 })
 

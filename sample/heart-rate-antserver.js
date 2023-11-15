@@ -1,5 +1,5 @@
-const {HeartRateSensor} = require('incyclist-ant-plus');
-const {AntServerBinding} = require('incyclist-ant-plus/lib/bindings');
+const {HeartRateSensor} = require('../lib');
+const {AntServerBinding} = require('../lib/bindings');
 
 
 const binaryPath = '..\\bin\\antserver.exe'

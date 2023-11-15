@@ -1,6 +1,6 @@
 const EventEmitter = require('events');
-const {AntDevice} = require('incyclist-ant-plus/lib/bindings')
-const {HeartRateSensor,BicyclePowerSensor, FitnessEquipmentSensor} = require ('incyclist-ant-plus'); 
+const {AntDevice} = require('../lib/bindings')
+const {HeartRateSensor,BicyclePowerSensor, FitnessEquipmentSensor} = require ('../lib'); 
 
 const PROFILE_HRM = 'HR'
 const PROFILE_PWR = 'PWR'

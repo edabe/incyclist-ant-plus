@@ -1,5 +1,5 @@
-const {CadenceSensor} = require('incyclist-ant-plus');
-const {AntDevice} = require('incyclist-ant-plus/lib/bindings')
+const {CadenceSensor} = require('../lib');
+const {AntDevice} = require('../lib/bindings')
 
 const ant = new AntDevice({startupTimeout:2000})
 
