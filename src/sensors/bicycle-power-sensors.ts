@@ -17,6 +17,7 @@ export class BicyclePowerSensorState {
 
 	DeviceID: number;
     ManId?: number;
+
 	PedalPower?: number;
 	RightPedalPower?: number;
 	LeftPedalPower?: number;
@@ -31,6 +32,15 @@ export class BicyclePowerSensorState {
 	CalculatedCadence?: number;
 	CalculatedTorque?: number;
 	CalculatedPower?: number;
+
+	SerialNumber?: number;
+	HwVersion?: number;
+	SwVersion?: number;
+	ModelNum?: number;
+	BatteryLevel?: number;
+	BatteryVoltage?: number;
+	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
+
 	Rssi?: number;
 	Threshold?: number;
 }
@@ -89,7 +99,7 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-				updateState(this, this.states[deviceID], data);
+				updateState(this.states[deviceID], data);
 				if (this.deviceID===0 || this.deviceID===deviceID) {
 					channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID] )
 				} 
@@ -106,13 +116,12 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 
 
 function updateState(
-	sensor: BicyclePowerSensor ,
 	state: BicyclePowerSensorState,
 	data: Buffer) {
 
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
-		case 0x01: {
+		case 0x01: { // calibration parameters
 			const calID = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 			if (calID === 0x10) {
 				const calParam = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
@@ -122,10 +131,7 @@ function updateState(
 			}
 			break;
 		}
-        case 0x50:
-            state.ManId = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
-            break;
-		case 0x10: {
+		case 0x10: { // power only
 			const pedalPower = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 			if (pedalPower !== 0xFF) {
 				if (pedalPower & 0x80) {
@@ -152,7 +158,7 @@ function updateState(
 			state.Power = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 			break;
 		}
-		case 0x20: {
+		case 0x20: { // crank torque frequency
 			const oldEventCount = state.EventCount;
 			const oldTimeStamp = state.TimeStamp;
 			const oldTorqueTicksStamp = state.TorqueTicksStamp;
@@ -194,8 +200,55 @@ function updateState(
 			}
 			break;
 		}
+        case 0x50: { // manufacturer's information
+			// decode the Manufacturer ID
+            state.ManId = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+			// decode the 4 byte serial number
+			state.SerialNumber = state.DeviceID;
+			state.SerialNumber |= data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 2) << 16;
+			state.SerialNumber >>>= 0;
+            break;
+		}
+        case 0x51: { // product information
+			//decode HW version, SW version, and model number
+			state.HwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
+			state.SwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
+			state.ModelNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+			break;
+        }
+        case 0x52: { // battery status
+			const batteryLevel = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
+			const batteryFrac = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
+			const batteryStatus = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+			if (batteryLevel !== 0xFF) {
+				state.BatteryLevel = batteryLevel;
+			}
+			state.BatteryVoltage = (batteryStatus & 0x0F) + (batteryFrac / 256);
+			const batteryFlags = (batteryStatus & 0x70) >>> 4;
+			switch (batteryFlags) {
+				case 1:
+					state.BatteryStatus = 'New';
+					break;
+				case 2:
+					state.BatteryStatus = 'Good';
+					break;
+				case 3:
+					state.BatteryStatus = 'Ok';
+					break;
+				case 4:
+					state.BatteryStatus = 'Low';
+					break;
+				case 5:
+					state.BatteryStatus = 'Critical';
+					break;
+				default:
+					state.BatteryVoltage = undefined;
+					state.BatteryStatus = 'Invalid';
+					break;
+			}
+			break;            
+		}
 		default:
 			return;
-	}
-	
+	}	
 }
