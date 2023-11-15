@@ -148,14 +148,20 @@ function updateState(
 				state.RightPedalPower = undefined;
 				state.LeftPedalPower = undefined;
 			}
+			// When rider stops pedaling, Stages power meter will keep sending the last non-zero
+			// data for power and cadence, even though the cranks are no longer spinning.
+			// Rely on AccumulatedPower to detect and zero these values: 
+			// If AccumulatedPower(N) == AccumulatedPower(N-1), then the rider is not pedaling
 			const cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+			const accumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+			const staleData = accumulatedPower == state.AccumulatedPower;
 			if (cadence !== 0xFF) {
-				state.Cadence = cadence;
+				state.Cadence = staleData ? 0 : cadence;
 			} else {
 				state.Cadence = undefined;
 			}
-			state.AccumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
-			state.Power = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+			state.Power = staleData ? 0 : data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+			state.AccumulatedPower = accumulatedPower;
 			break;
 		}
 		case 0x20: { // crank torque frequency
