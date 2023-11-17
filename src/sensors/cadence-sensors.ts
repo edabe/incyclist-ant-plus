@@ -19,6 +19,7 @@ export class CadenceSensorState {
     CadenceEventTime: number;
     CumulativeCadenceRevolutionCount: number;
     CalculatedCadence: number;
+    Motion?: boolean;
     EventTime: number;
 
     OperatingTime?: number;
@@ -28,7 +29,6 @@ export class CadenceSensorState {
     ModelNum?: number;
     BatteryVoltage?: number;
     BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
-    Motion?: boolean;
     
     Rssi: number;
     Threshold: number;
@@ -51,13 +51,17 @@ export default class CadenceSensor extends Sensor implements ISensor {
 		return this.deviceID
 	}
     getChannelConfiguration(): ChannelConfiguration {
-        return { type: 'receive', transmissionType: 0, timeout: Constants.TIMEOUT_NEVER, period: PERIOD, frequency: 57 };
+        return { 
+            type: 'receive', 
+            transmissionType: 0,
+            timeout: Constants.TIMEOUT_NEVER,
+            period: PERIOD,
+            frequency: 57
+        };
     }
-
     onEvent(data: Buffer) {
         return;
     }
-
     onMessage(data: Buffer) {
         const channel = this.getChannel();
         if (!channel) return;
@@ -173,19 +177,17 @@ function updateState(state: CadenceSensorState, data: Buffer) {
             // To account for that, store the cadence event time only when data changes,
             // and zero the cadence if the event time repeats for longer than 5 seconds
             const oldEventTime = state.EventTime;
-            const eventTime = Date.now();
             const oldCadenceTime = state.CadenceEventTime;
+            const oldCadenceCount = state.CumulativeCadenceRevolutionCount;
+
+            const eventTime = Date.now();
             let cadenceTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+            const cadenceCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 
             if (cadenceTime !== oldCadenceTime) {
-                // console.log(`eventTime: ${eventTime - oldEventTime} / cadenceTime: ${cadenceTime - oldCadenceTime}`);
                 // Calculate cadence
                 state.EventTime = eventTime;
                 state.CadenceEventTime = cadenceTime;
-
-                const oldCadenceCount = state.CumulativeCadenceRevolutionCount;
-                const cadenceCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
-
                 state.CumulativeCadenceRevolutionCount = cadenceCount;
                 if (oldCadenceTime > cadenceTime) {
                     // Hit rollover value
@@ -200,10 +202,6 @@ function updateState(state: CadenceSensorState, data: Buffer) {
                 // Force cadence to zero
                 state.CalculatedCadence = 0;
             }
-            // else {
-            //     const delta = (eventTime - oldEventTime) / 60000;
-            //     state.CalculatedCadence = state.CalculatedCadence * (1 - delta);
-            // }
             break;
         }
         default:
