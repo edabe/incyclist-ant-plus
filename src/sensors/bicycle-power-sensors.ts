@@ -8,8 +8,6 @@ import { Constants } from '../consts';
 import { Messages } from '../messages';
 import Sensor from './base-sensor';
 
-
-
 export class BicyclePowerSensorState {
 	constructor(deviceID: number) {
 		this.DeviceID = deviceID;
@@ -49,9 +47,7 @@ const DEVICE_TYPE 	= 0x0B
 const PROFILE 		= 'PWR';
 const PERIOD		= 8182
 
-
 export default class BicyclePowerSensor extends Sensor implements ISensor {
-
 	private states: { [id: number]: BicyclePowerSensorState } = {};
 
 	getDeviceType(): number {
@@ -115,9 +111,7 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 }
 
 
-function updateState(
-	state: BicyclePowerSensorState,
-	data: Buffer) {
+function updateState(state: BicyclePowerSensorState, data: Buffer) {
 
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
