@@ -30,6 +30,16 @@ export default abstract class Sensor implements ISensor {
         return this.sendTimeout;
     }
 
+    protected hashObject(obj: Object): String {
+        let hash = 0
+        let str = JSON.stringify(obj);
+        for (let i = 0; i < str.length; i++) {
+            hash = (hash << 5) - hash + str.charCodeAt(i)
+            hash &= hash // Convert to 32bit integer
+        }
+        return (hash >>> 0).toString(36)
+    }
+
     abstract getProfile(): Profile;
     abstract getDeviceType(): number
     abstract getChannelConfiguration(): ChannelConfiguration;
