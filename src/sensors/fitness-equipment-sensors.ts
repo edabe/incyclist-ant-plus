@@ -14,6 +14,8 @@ export class FitnessEquipmentSensorState {
 	}
 
 	DeviceID: number;
+	ManId?: number;
+
 	Temperature?: number;
 	ZeroOffset?: number;
 	SpinDownTime?: number;
@@ -43,57 +45,55 @@ export class FitnessEquipmentSensorState {
 	TrainerStatus?: number;
 	TargetStatus?: 'OnTarget' | 'LowSpeed' | 'HighSpeed';
 
+	SerialNumber?: number;
 	HwVersion?: number;
-	ManId?: number;
+	SwVersion?: number;
 	ModelNum?: number;
 
-	SwVersion?: number;
-	SerialNumber?: number;
-
 	PairedDevices: any[] = [];
+	RawData : Buffer;
+
 	Rssi?: number;
 	Threshold?: number;
-
-	RawData : Buffer;
 }
 
-
-const DEVICE_TYPE 	= 0x11
+const DEVICE_TYPE 	= 0x11;
 const PROFILE 		= 'FE';
-const PERIOD		= 8192
-
+const PERIOD		= 8192;
 
 export default class FitnessEquipmentSensor extends Sensor implements ISensor {
-
 	private states: { [id: number]: FitnessEquipmentSensorState } = {};
 	private isRestarting: boolean;
 
 	getDeviceType(): number {
-		return DEVICE_TYPE
+		return DEVICE_TYPE;
 	}
 	getProfile(): Profile {
-		return PROFILE
+		return PROFILE;
 	}
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
 	getChannelConfiguration(): ChannelConfiguration {
-		return { type:'receive', transmissionType:0, timeout:Constants.TIMEOUT_NEVER, period:PERIOD, frequency:57}
+		return { 
+			type:'receive',
+			transmissionType:0,
+			timeout:Constants.TIMEOUT_NEVER,
+			period:PERIOD,
+			frequency:57
+		};
 	}
-
 	onMessage(data: Buffer) {
-		const channel = this.getChannel()
-		if (!channel)
-			return;
+		const channel = this.getChannel();
+		if (!channel) return;
 
-		const channelNo = channel.getChannelNo()
+		const channelNo = channel.getChannelNo();
 		const deviceID = data.readUInt16LE(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 1);
 		const deviceType = data.readUInt8(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 3);
 
-		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM)!==channelNo || deviceType !== this.getDeviceType()) {
+		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM) !== channelNo || deviceType !== this.getDeviceType()) {
 			return;
 		}
-	
 
 		if (!this.states[deviceID]) {
 			this.states[deviceID] = new FitnessEquipmentSensorState(deviceID);
@@ -110,38 +110,40 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-				updateState( this.states[deviceID], data);
-				if (this.deviceID===0 || this.deviceID===deviceID) {
-					channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID] )
-				} 
-
+                const oldHash = this.hashObject(this.states[deviceID]);
+                updateState(this.states[deviceID], data);
+                const newHash = this.hashObject(this.states[deviceID]);
+                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                    channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
+                }
 				break;
 			default:
 				break;
 		}
-
 	}
 
-	logEvent(event) {
-		const channel = this.getChannel()
-		if  (channel && channel.getProps().logger && channel.getProps().logger.logEvent!==undefined) {
-			try { channel.getProps().logger.logEvent(event) } catch{}
+	private logEvent(event: Object) {
+		const channel = this.getChannel();
+		if (channel && channel.getProps().logger && channel.getProps().logger.logEvent !== undefined) {
+			try {
+				channel.getProps().logger.logEvent(event);
+			} catch {
+				console.error(`ERROR: Unable to log event ${JSON.stringify(event)}`);
+			}
 		} 
 	}
 
 	protected async waitForRestart(): Promise<void> {
-		
-		return new Promise( done=> {
+		return new Promise(done => {
 			if (!this.isRestarting)	
-				return done()
-			const iv = setInterval( ()=>{
-				if (!this.isRestarting)	 {
-					clearInterval(iv)
-					done()
+				return done();
+			const iv = setInterval(() => {
+				if (!this.isRestarting) {
+					clearInterval(iv);
+					done();
 				}
-			}, 100)
-		})
-
+			}, 100);
+		});
 	}
 
 	async onEvent(data: Buffer) {
@@ -151,52 +153,59 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 			msg: msg.toString(16),
 			code: code.toString(16),
 		};
-		if(event.msg==='1' && code in [0,3,4,5,6])
+		if (event.msg==='1' && code in [0,3,4,5,6])
 			return;
 
-		this.logEvent( {message:'channel event', channelNo:this.channel.getChannelNo() , deviceID:this.getDeviceID(), event})		
+		this.logEvent({
+			message:'channel event', 
+			channelNo:this.channel.getChannelNo() , 
+			deviceID:this.getDeviceID(), 
+			event
+		});
 		
 		return;
 	}
 
-	// commands
-
-	async send (data: Buffer, props:{logStr?:string, timeout?:number,args?:object}):Promise<boolean> {
-		const {logStr,timeout,args} = props||{}
-		const channel = this.getChannel()
+	// Commands
+	async send(data: Buffer, props:{logStr?:string, timeout?:number,args?:object}):Promise<boolean> {
+		const { logStr, timeout, args } = props || {};
+		const channel = this.getChannel();
 		if (!channel)
 			return false;
 
-		const logEvent =  (logStr && channel.getProps().logger && channel.getProps().logger.logEvent!==undefined) ? 
-			(e)=> { try { channel.getProps().logger.logEvent(e) } catch{}} : 
-			(_e)=>{}
-
-		//console.log(logStr,logEvent)
-
 		if (this.isRestarting) 
-			await this.waitForRestart()
-		const tsStart = Date.now()
-		logEvent ( {message:'sending FE message', command:logStr,args,timeout})	
+			await this.waitForRestart();
 
-		const res = await channel.sendMessage(data,{timeout})
+		const tsStart = Date.now();
+		this.logEvent({
+			message:'sending FE message', 
+			command:logStr,
+			args,
+			timeout
+		});
+
+		const res = await channel.sendMessage(data,{timeout});
 		if (this.isRestarting) 
-			await this.waitForRestart()
+			await this.waitForRestart();
 
-		const duration = Date.now()-tsStart;
-		logEvent( {message:'FE message response', command:logStr, args,response:res, duration})
+		const duration = Date.now() - tsStart;
+		this.logEvent({
+			message:'FE message response', 
+			command:logStr, 
+			args,
+			response:res, 
+			duration
+		});
 
 		// workaround for old Incyclist versions - can be removed later
-		if (duration>timeout) {
-			throw new Error('Timeout')
+		if (duration > timeout) {
+			throw new Error('Timeout');
 		}
 		// ... end workaround
-
 		return res;		
-
 	}
 
-    async sendUserConfiguration (userWeight, bikeWeight, wheelDiameter, gearRatio): Promise<boolean> {
-
+    async sendUserConfiguration(userWeight: number, bikeWeight: number, wheelDiameter: number, gearRatio: number): Promise<boolean> {
 		var payload = [];
 		payload.push ( this.channel.getChannelNo());
 
@@ -222,72 +231,71 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 			gr= Math.trunc(gr/0.03);
 		}
 
-		payload.push (0x37);                        // data page 55: User Configuration
-		payload.push (m&0xFF);                      // weight LSB
-		payload.push ((m>>8)&0xFF);                 // weight MSB
-		payload.push (0xFF);                        // reserved
-		payload.push (((mb&0xF)<<4)|(dOffset&0xF)); //  bicycle weight LSN  and 
-		payload.push ((mb>>4)&0xF);                 // bicycle weight MSB 
-		payload.push (d&0xFF);                      // bicycle wheel diameter 
-		payload.push (gr&0xFF);                     // gear ratio 
+		payload.push (0x37);                        // Data page 55: User Configuration
+		payload.push (m&0xFF);                      // Weight LSB
+		payload.push ((m>>8)&0xFF);                 // Weight MSB
+		payload.push (0xFF);                        // Reserved
+		payload.push (((mb&0xF)<<4)|(dOffset&0xF)); // Bicycle weight LSN  and 
+		payload.push ((mb>>4)&0xF);                 // Bicycle weight MSB 
+		payload.push (d&0xFF);                      // Bicycle wheel diameter 
+		payload.push (gr&0xFF);                     // Gear ratio 
 
 		let msg = Messages.acknowledgedData(payload);
-		return await this.send(msg,{logStr,timeout:this.sendTimeout,args})
-
+		return await this.send(msg,{logStr,timeout:this.sendTimeout,args});
     }
 
-    async sendBasicResistance( resistance): Promise<boolean> {
+    async sendBasicResistance(resistance: number): Promise<boolean> {
 		var payload = [];
-		payload.push ( this.channel.getChannelNo());
+		payload.push (this.channel.getChannelNo());
 
 		const logStr = 'setBasicResistance';
-		const args = {resistance}
+		const args = {resistance};
 
-		var res = resistance===undefined ?  0 : resistance;	
+		var res = resistance === undefined ?  0 : resistance;	
 		res = res / 0.5;
 
-		payload.push (0x30);                        // data page 48: Basic Resistance
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (res&0xFF);                    // resistance 
-
-		let msg = Messages.acknowledgedData(payload);			
-		return await this.send(msg,{logStr,timeout:this.sendTimeout,args})
-    }
-    
-    async sendTargetPower( power): Promise<boolean> {
-		var payload = [];
-		payload.push ( this.channel.getChannelNo());
-
-		const logStr = 'setTargetPower'
-		const args = {power}
-
-		var p = power===undefined ?  0x00 : power;
-
-		p = p * 4;
-		payload.push (0x31);                        // data page 49: Target Power
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (p&0xFF);                      // power LSB
-		payload.push ((p>>8)&0xFF);                 // power MSB 
+		payload.push (0x30);                        // Data page 48: Basic Resistance
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (res&0xFF);                    // Resistance 
 
 		let msg = Messages.acknowledgedData(payload);
-		return await this.send(msg,{logStr,args,timeout:this.sendTimeout})
+		return await this.send(msg,{logStr,timeout:this.sendTimeout,args});
+    }
+    
+    async sendTargetPower(power: number): Promise<boolean> {
+		var payload = [];
+		payload.push (this.channel.getChannelNo());
+
+		const logStr = 'setTargetPower';
+		const args = {power};
+
+		var p = power === undefined ?  0x00 : power;
+
+		p = p * 4;
+		payload.push (0x31);                        // Data page 49: Target Power
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (p&0xFF);                      // Power LSB
+		payload.push ((p>>8)&0xFF);                 // Power MSB 
+
+		let msg = Messages.acknowledgedData(payload);
+		return await this.send(msg,{logStr,args,timeout:this.sendTimeout});
     }
 
-    async sendWindResistance( windCoeff,windSpeed,draftFactor): Promise<boolean> {
+    async sendWindResistance(windCoeff: number,windSpeed: number, draftFactor: number): Promise<boolean> {
 		var payload = [];
-		payload.push ( this.channel.getChannelNo());
+		payload.push (this.channel.getChannelNo());
 
 		const logStr = 'setWindResistance';
-		const args = {windCoeff,windSpeed,draftFactor}
+		const args = {windCoeff,windSpeed,draftFactor};
 
 		var wc = windCoeff===undefined ? 0xFF : windCoeff;
 		var ws = windSpeed===undefined ? 0xFF : windSpeed;
@@ -313,19 +321,19 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 		payload.push (df&0xFF);                     // Drafting Factor
 
 		let msg = Messages.acknowledgedData(payload);
-		return await this.send(msg,{logStr,args,timeout:this.sendTimeout})
+		return await this.send(msg,{logStr,args,timeout:this.sendTimeout});
     }
 
-    async sendTrackResistance( slope, rrCoeff?): Promise<boolean> {
+    async sendTrackResistance(slope: number, rrCoeff?: number): Promise<boolean> {
 
 		var payload = [];
-		payload.push ( this.channel.getChannelNo());
+		payload.push (this.channel.getChannelNo());
 		
 		const logStr = 'setTrackResistance';
-		const args = {slope, rrCoeff}
+		const args = {slope, rrCoeff};
 
-		var s  = slope===undefined ?  0xFFFF : slope;
-		var rr = rrCoeff===undefined ? 0xFF : rrCoeff;
+		var s = slope === undefined ?  0xFFFF : slope;
+		var rr = rrCoeff === undefined ? 0xFF : rrCoeff;
 
 		if (s!==0xFFFF) {
 			s = Math.trunc((s+200)/0.01);
@@ -334,19 +342,18 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 			rr = Math.trunc(rr/0.00005);
 		}
 
-		payload.push (0x33);                        // data page 51: Track Resistance 
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
-		payload.push (0xFF);                        // reserved
+		payload.push (0x33);                        // Data page 51: Track Resistance 
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
+		payload.push (0xFF);                        // Reserved
 		payload.push (s&0xFF);                      // Grade (Slope) LSB
 		payload.push ((s>>8)&0xFF);                 // Grade (Slope) MSB
 		payload.push (rr&0xFF);                     // Drafting Factor
 
 		let msg = Messages.acknowledgedData(payload);
-		return await this.send(msg,{logStr,args,timeout:this.sendTimeout})
+		return await this.send(msg,{logStr,args,timeout:this.sendTimeout});
     }
-
 }
 
 function resetState(state: FitnessEquipmentSensorState) {
@@ -371,9 +378,8 @@ function resetState(state: FitnessEquipmentSensorState) {
 	delete state.TargetStatus;
 }
 
-function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
-
-	state.RawData = data; 
+function updateState(state: FitnessEquipmentSensorState, data: Buffer) {
+	state.RawData = data;
 
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
@@ -436,7 +442,7 @@ function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
 			elapsedTime /= 4;
 			const oldElapsedTime = (state.ElapsedTime || 0) % 64;
 			if (elapsedTime !== oldElapsedTime) {
-				if (oldElapsedTime > elapsedTime) { //Hit rollover value
+				if (oldElapsedTime > elapsedTime) { // Hit rollover value
 					elapsedTime += 64;
 				}
 			}
@@ -445,7 +451,7 @@ function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
 			if (capStateBF & 0x04) {
 				const oldDistance = (state.Distance || 0) % 256;
 				if (distance !== oldDistance) {
-					if (oldDistance > distance) { //Hit rollover value
+					if (oldDistance > distance) { // Hit rollover value
 						distance += 256;
 					}
 				}
@@ -578,7 +584,6 @@ function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
 			if (flagStateBF & 0x80) {
 				// lap
 			}
-
 			break;
 		}
 		case 0x50: {
@@ -601,7 +606,6 @@ function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
 			if (serial !== 0xFFFFFFFF) {
 				state.SerialNumber = serial;
 			}
-
 			break;
 		}
 		case 0x56: {
@@ -619,11 +623,9 @@ function updateState( state: FitnessEquipmentSensorState, data: Buffer) {
 			if (tot > 0) {
 				state.PairedDevices.push({ id: devId, type: devType, paired: (chState & 0x80) ? true : false });
 			}
-
 			break;
 		}
 		default:
 			return;
 	}
-	
 }
