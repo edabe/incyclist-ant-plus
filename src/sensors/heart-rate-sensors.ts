@@ -14,39 +14,38 @@ export class HeartRateSensorState {
 	}
 
 	DeviceID: number;
+	ManId?: number;
+
 	BeatTime: number;
 	BeatCount: number;
 	ComputedHeartRate: number;
-	OperatingTime?: number;
-	ManId?: number;
-	SerialNumber?: number;
-	HwVersion?: number;
-	SwVersion?: number;
-	ModelNum?: number;
 	PreviousBeat?: number;
-
 	IntervalAverage?: number;
 	IntervalMax?: number;
 	SessionAverage?: number;
 	SupportedFeatures?: number;
 	EnabledFeatures?: number;
+
+	OperatingTime?: number;
+	SerialNumber?: number;
+	HwVersion?: number;
+	SwVersion?: number;
+	ModelNum?: number;
 	BatteryLevel?: number;
 	BatteryVoltage?: number;
 	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
+
 	Rssi?: number;
 	Threshold?: number;
-
 }
 
-const DEVICE_TYPE 	= 120;
-const PROFILE 		= 'HR';
-const PERIOD		= 8070
+const DEVICE_TYPE = 120;
+const PROFILE = 'HR';
+const PERIOD = 8070;
 
 export default class HeartRateSensor extends Sensor implements ISensor {
-
 	protected states: { [id: number]: HeartRateSensorState } = {};
 	protected pages: { [id: number]: Page } = {};
-
 
 	getDeviceType(): number {
 		return DEVICE_TYPE
@@ -58,20 +57,22 @@ export default class HeartRateSensor extends Sensor implements ISensor {
 		return this.deviceID
 	}
 	getChannelConfiguration(): ChannelConfiguration {
-		return { type:'receive', transmissionType:0, timeout:Constants.TIMEOUT_NEVER, period:PERIOD, frequency:57}
+		return { 
+			type:'receive',
+			transmissionType:0,
+			timeout:Constants.TIMEOUT_NEVER,
+			period:PERIOD,
+			frequency:57
+		};
 	}
-
 	onEvent(data: Buffer) {
-		return
+		return;
 	}
-
 	onMessage(data: Buffer) {
-		
 		const channel = this.getChannel()
-		if (!channel)
-			return;
-		const channelNo = channel.getChannelNo()
+		if (!channel) return;
 
+		const channelNo = channel.getChannelNo()
 		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM) !== channelNo) {
 			return;
 		}
@@ -101,77 +102,76 @@ export default class HeartRateSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-				updateState(this, this.states[deviceID], this.pages[deviceID], data);
-
-				if (this.deviceID===0 || this.deviceID===deviceID) {
-					channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID] )
-				} 
-
+                const oldHash = this.hashObject(this.states[deviceID]) + this.hashObject(this.pages[deviceID]);
+                updateState(this.states[deviceID], this.pages[deviceID], data);
+                const newHash = this.hashObject(this.states[deviceID]) + this.hashObject(this.pages[deviceID]);
+                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                    channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
+                }
 				break;
 			default:
 				break;
-		}
-		
+		}		
 	}
-
 }
 
-
 const TOGGLE_MASK = 0x80;
-enum PageState { INIT_PAGE, STD_PAGE, EXT_PAGE }
+enum PageState { INIT_PAGE, STD_PAGE, EXT_PAGE };
 
 type Page = {
 	oldPage: number;
 	pageState: PageState // sets the state of the receiver - INIT, STD_PAGE, EXT_PAGE
 };
 
-function updateState(
-	sensor: HeartRateSensor,
-	state: HeartRateSensorState,
-	page: Page,
-	data: Buffer) {
-
+function updateState(state: HeartRateSensorState, page: Page, data: Buffer) {
 	const pageNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	if (page.pageState === PageState.INIT_PAGE) {
 		page.pageState = PageState.STD_PAGE; // change the state to STD_PAGE and allow the checking of old and new pages
 		// decode with pages if the page byte or toggle bit has changed
-	} else if ((pageNum !== page.oldPage) || (page.pageState === PageState.EXT_PAGE)) {
+	} 
+	else if ((pageNum !== page.oldPage) || (page.pageState === PageState.EXT_PAGE)) {
 		page.pageState = PageState.EXT_PAGE; // set the state to use the extended page format
 		switch (pageNum & ~TOGGLE_MASK) { //check the new pages and remove the toggle bit
-			case 1:
-				//decode the cumulative operating time
+			case 1: {
+				// Decode the cumulative operating time
 				state.OperatingTime = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 				state.OperatingTime |= data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2) << 8;
 				state.OperatingTime |= data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3) << 16;
 				state.OperatingTime *= 2;
 				break;
-			case 2:
-				//decode the Manufacturer ID
+			}
+			case 2: {
+				// Decode the Manufacturer ID
 				state.ManId = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
-				//decode the 4 byte serial number
+				// Ddecode the 4 byte serial number
 				state.SerialNumber = state.DeviceID;
 				state.SerialNumber |= data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 2) << 16;
 				state.SerialNumber >>>= 0;
 				break;
-			case 3:
-				//decode HW version, SW version, and model number
+			}
+			case 3: {
+				// Decode HW version, SW version, and model number
 				state.HwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 				state.SwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				state.ModelNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
 				break;
-			case 4:
-				//decode the previous heart beat measurement time
+			}
+			case 4: {
+				// Decode the previous heart beat measurement time
 				state.PreviousBeat = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				break;
-			case 5:
+			}
+			case 5: {
 				state.IntervalAverage = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 				state.IntervalMax = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				state.SessionAverage = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
 				break;
-			case 6:
+			}
+			case 6: {
 				state.SupportedFeatures = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				state.EnabledFeatures = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
 				break;
+			}
 			case 7: {
 				const batteryLevel = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 				const batteryFrac = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
@@ -208,12 +208,12 @@ function updateState(
 				break;
 		}
 	}
-	// decode the last four bytes of the HRM format, the first byte of this message is the channel number
-	DecodeDefaultHRM(state, data.slice(Messages.BUFFER_INDEX_MSG_DATA + 4));
+	// Decode the last four bytes of the HRM format, the first byte of this message is the channel number
+	DecodeDefaultHRM(state, data.subarray(Messages.BUFFER_INDEX_MSG_DATA + 4));
 	page.oldPage = pageNum;
 }
 
-function DecodeDefaultHRM(state: HeartRateSensorState , pucPayload: Buffer) {
+function DecodeDefaultHRM(state: HeartRateSensorState, pucPayload: Buffer) {
 	// decode the measurement time data (two bytes)
 	state.BeatTime = pucPayload.readUInt16LE(0);
 	// decode the measurement count data
