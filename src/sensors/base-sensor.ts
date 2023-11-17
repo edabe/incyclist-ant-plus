@@ -30,7 +30,7 @@ export default abstract class Sensor implements ISensor {
         return this.sendTimeout;
     }
 
-    protected hashObject(obj: Object): String {
+    protected hashObject(obj: Object): string {
         let hash = 0
         let str = JSON.stringify(obj);
         for (let i = 0; i < str.length; i++) {
