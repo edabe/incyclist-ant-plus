@@ -60,23 +60,26 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 		return this.deviceID
 	}
 	getChannelConfiguration(): ChannelConfiguration {
-		return { type:'receive', transmissionType:0, timeout:Constants.TIMEOUT_NEVER, period:PERIOD, frequency:57}
+		return { 
+			type:'receive', 
+			transmissionType:0,
+			timeout:Constants.TIMEOUT_NEVER,
+			period:PERIOD,
+			frequency:57
+		}
 	}
-
 	onEvent(data: Buffer) {
 		return
 	}
-
 	onMessage(data:Buffer) {
 		const channel = this.getChannel()
-		if (!channel)
-			return;
+		if (!channel) return;
 
 		const channelNo = channel.getChannelNo()
 		const deviceID = data.readUInt16LE(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 1);
 		const deviceType = data.readUInt8(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 3);
 
-		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM)!==channelNo || deviceType !== this.getDeviceType()) {
+		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM) !== channelNo || deviceType !== this.getDeviceType()) {
 			return;
 		}
 
@@ -95,24 +98,20 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
+				const oldHash = this.hashObject(this.states[deviceID]);
 				updateState(this.states[deviceID], data);
-				if (this.deviceID===0 || this.deviceID===deviceID) {
-					channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID] )
-				} 
-
+                const newHash = this.hashObject(this.states[deviceID]);
+                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                    channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
+                }
 				break;
 			default:
 				break;
 		}
-
 	}
- 
-
 }
 
-
 function updateState(state: BicyclePowerSensorState, data: Buffer) {
-
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
 		case 0x01: { // calibration parameters
@@ -210,7 +209,7 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
             break;
 		}
         case 0x51: { // product information
-			//decode HW version, SW version, and model number
+			// decode HW version, SW version, and model number
 			state.HwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 			state.SwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 			state.ModelNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
