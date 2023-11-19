@@ -14,32 +14,53 @@ export class BicyclePowerSensorState {
 	}
 
 	DeviceID: number;
-    ManId?: number;
 
-	PedalPower?: number;
-	RightPedalPower?: number;
-	LeftPedalPower?: number;
-	Cadence?: number;
-	AccumulatedPower?: number;
-	Power?: number;
-	offset: number = 0;
-	EventCount?: number;
-	TimeStamp?: number;
-	Slope?: number;
-	TorqueTicksStamp?: number;
-	CalculatedCadence?: number;
-	CalculatedTorque?: number;
-	CalculatedPower?: number;
-	EventTime?: number;
+	// Comon PWR
+	Cadence?: number = undefined;
+	CalculatedCadence?: number = undefined;
+	Power?: number = undefined;
+	CalculatedPower?: number = undefined;
+	CalculatedTorque?: number = undefined;
 
-	SerialNumber?: number;
-	HwVersion?: number;
-	SwVersion?: number;
-	ModelNum?: number;
-	BatteryLevel?: number;
-	BatteryVoltage?: number;
-	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
+	// 0x01 page
+	Offset: number = 0;
 
+	// 0x10 page
+	_0x10_EventCount?: number = 0;
+	_0x10_EventTime?: number = Date.now();
+	PedalPower?: number = undefined;
+	RightPedalPower?: number = undefined;
+	LeftPedalPower?: number = undefined;
+	AccumulatedPower?: number = 0;
+
+	// 0x12 page
+	_0x12_EventCount?: number = 0;
+	_0x12_EventTime?: number = Date.now();
+	CrankTicks?: number = 0;
+	AccumulatedCrankPeriod?: number = 0;
+	AccumulatedTorque?: number = 0;
+
+	// 0x20 page
+	_0x20_EventCount?: number = 0;
+	Slope?: number = 0;
+	CrankTicksStamp?: number = 0;
+	TorqueTicksStamp?: number = 0;
+
+	// 0x50 page
+    ManId?: number = undefined;
+	SerialNumber?: number = undefined;
+
+	// 0x51 page
+	HwVersion?: number = undefined;
+	SwVersion?: number = undefined;
+	ModelNum?: number = undefined;
+
+	// 0x52 page
+	BatteryLevel?: number = undefined;
+	BatteryVoltage?: number = undefined;
+	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid' = 'Invalid';
+
+	// Scanner
 	Rssi?: number;
 	Threshold?: number;
 }
@@ -120,7 +141,7 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			if (calID === 0x10) {
 				const calParam = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				if (calParam === 0x01) {
-					state.offset = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+					state.Offset = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 				}
 			}
 			break;
@@ -130,16 +151,20 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			// no power being applied to the cranks.
 			// To account for that, store the cadence event time only when data changes,
 			// and zero the cadence if the event time repeats for longer than 5 seconds
-			const oldEventTime = state.EventTime;
-			const oldEventCount = state.EventCount;
+			const oldEventTime = state._0x10_EventTime;
+			const oldEventCount = state._0x10_EventCount;
 
             const eventTime = Date.now();
 			const eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
-			console.log(`====== eventCount ${oldEventCount} ${eventCount}`);
+			let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+			if (cadence === 0xFF) {
+				cadence = undefined;
+			}
+			let delay = 125000 / cadence ? cadence : 62.5; // progressive delay, more sensitive at higher cadences
 			if (oldEventCount !== eventCount) {
 				// Calculate power
-				state.EventTime = eventTime;
-				state.EventCount = eventCount;
+				state._0x10_EventTime = eventTime;
+				state._0x10_EventCount = eventCount;
 				const pedalPower = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				if (pedalPower !== 0xFF) {
 					if (pedalPower & 0x80) {
@@ -151,22 +176,12 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 						state.RightPedalPower = undefined;
 						state.LeftPedalPower = undefined;
 					}
-				} else {
-					state.PedalPower = undefined;
-					state.RightPedalPower = undefined;
-					state.LeftPedalPower = undefined;
 				}
-				const cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
-				if (cadence !== 0xFF) {
-					state.Cadence = cadence;
-				} else {
-					state.Cadence = undefined;
-				}
+				state.Cadence = cadence;
 				state.AccumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
 				state.Power = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 			}
-			else if ((eventTime - oldEventTime) >= 5000) {
-				console.log("====== resetting value");
+			else if ((eventTime - oldEventTime) >= delay) {
 				// Force power and candence to zero
 				state.Cadence = 0;
 				state.Power = 0;
@@ -174,12 +189,73 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			break;
 		}
 		case 0x12: { // standard crankk torque
-			// console.log("0x12");
+			// Stages power meter is event_synchronous and will only send new event data
+			// when a complete crank rotation happens. If the crank stops rotating, the
+			// same event is repeated, making it difficult to interpret a zero-cadence.
+			// To account for that, store the cadence event time only when data changes,
+			// and zero the cadence if the event time repeats for longer than 5 seconds
+			const oldEventTime = state._0x12_EventTime;
+			const oldEventCount = state._0x12_EventCount;
+			const oldCrankTicks = state.CrankTicks;
+			const oldAccumulatedPeriod = state.AccumulatedCrankPeriod;
+			const oldAccumulatedTorque = state.AccumulatedTorque;
+
+            const eventTime = Date.now();
+			let eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
+			let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+			if (cadence === 0xFF) {
+				cadence = undefined;
+			}
+			let delay = 125000 / cadence ? cadence : 62.5; // progressive delay, more sensitive at higher cadences
+			if (oldEventCount !== eventCount) {
+				state._0x12_EventTime = eventTime;
+				state._0x12_EventCount = eventCount;
+				if (oldEventCount > eventCount) {
+					// Detected rollover
+					eventCount += 256;
+				}
+				let crankTicks = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
+				state.CrankTicks = crankTicks;
+				if (oldCrankTicks > crankTicks) {
+					// Detected rollover
+					crankTicks += 256;
+				}
+				state.Cadence = cadence;
+				let accumulatedPeriod = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+				state.AccumulatedCrankPeriod = accumulatedPeriod
+				if (oldAccumulatedPeriod > accumulatedPeriod) {
+					// Detected rollover
+					accumulatedPeriod += 65536;
+				}
+				let accumulatedTorque = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+				state.AccumulatedTorque = accumulatedTorque
+				if (oldAccumulatedTorque > accumulatedTorque) {
+					// Detected rollover
+					accumulatedTorque += 65536;
+				}
+
+				// Calculating cadence and power
+				const rotationEvents = eventCount - oldEventCount;
+				const rotationPeriod = (accumulatedPeriod - oldAccumulatedPeriod) / 2048;
+				const angularVel = 2 * Math.PI * rotationEvents / rotationPeriod;
+				const torque = (accumulatedTorque - oldAccumulatedTorque) / (32 * rotationEvents);
+
+				state.CalculatedTorque = torque;
+				state.CalculatedPower = angularVel * torque;
+				state.CalculatedCadence = 60 * rotationEvents / rotationPeriod;
+			}
+			else if ((eventTime - oldEventTime) >= delay) {
+				// Force power and candence to zero
+				state.Cadence = 0;
+				state.CalculatedTorque = 0;
+				state.CalculatedPower = 0;
+				state.CalculatedCadence = 0;
+			}
 			break;
 		}
 		case 0x20: { // crank torque frequency
-			const oldEventCount = state.EventCount;
-			const oldTimeStamp = state.TimeStamp;
+			const oldEventCount = state._0x20_EventCount;
+			const oldTimeStamp = state.CrankTicksStamp;
 			const oldTorqueTicksStamp = state.TorqueTicksStamp;
 
 			let eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
@@ -188,12 +264,12 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			let torqueTicksStamp = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 7);
 
 			if (timeStamp !== oldTimeStamp && eventCount !== oldEventCount) {
-				state.EventCount = eventCount;
+				state._0x20_EventCount = eventCount;
 				if (oldEventCount > eventCount) { //Hit rollover value
 					eventCount += 255;
 				}
 
-				state.TimeStamp = timeStamp;
+				state.CrankTicksStamp = timeStamp;
 				if (oldTimeStamp > timeStamp) { //Hit rollover value
 					timeStamp += 65400;
 				}
@@ -211,7 +287,7 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 				const cadence = Math.round(60 / cadencePeriod); // rpm
 				state.CalculatedCadence = cadence;
 
-				const torqueFrequency = (1 / (elapsedTime / torqueTicks)) - state.offset; // Hz
+				const torqueFrequency = (1 / (elapsedTime / torqueTicks)) - state.Offset; // Hz
 				const torque = torqueFrequency / (slope / 10); // Nm
 				state.CalculatedTorque = torque;
 
