@@ -168,7 +168,7 @@ function updateState(state: CadenceSensorState, data: Buffer) {
             }
         }
         case 0: { // default or unknown page
-            // Det old state for calculating cumulative values
+            // Get old state for calculating cumulative values
             //
             // Older devices based on accelerometers that transmit page 0 instead of page 5
             // will not set the cadence to zero when the pedal stops moving. Also, these

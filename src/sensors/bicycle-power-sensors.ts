@@ -30,6 +30,7 @@ export class BicyclePowerSensorState {
 	CalculatedCadence?: number;
 	CalculatedTorque?: number;
 	CalculatedPower?: number;
+	EventTime?: number;
 
 	SerialNumber?: number;
 	HwVersion?: number;
@@ -125,36 +126,55 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			break;
 		}
 		case 0x10: { // power only
-			const pedalPower = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
-			if (pedalPower !== 0xFF) {
-				if (pedalPower & 0x80) {
-					state.PedalPower = pedalPower & 0x7F;
-					state.RightPedalPower = state.PedalPower;
-					state.LeftPedalPower = 100 - state.RightPedalPower;
+			// Stages power meter will keep sending the last non-zero value when there is 
+			// no power being applied to the cranks.
+			// To account for that, store the cadence event time only when data changes,
+			// and zero the cadence if the event time repeats for longer than 5 seconds
+			const oldEventTime = state.EventTime;
+			const oldEventCount = state.EventCount;
+
+            const eventTime = Date.now();
+			const eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
+			console.log(`====== eventCount ${oldEventCount} ${eventCount}`);
+			if (oldEventCount !== eventCount) {
+				// Calculate power
+				state.EventTime = eventTime;
+				state.EventCount = eventCount;
+				const pedalPower = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
+				if (pedalPower !== 0xFF) {
+					if (pedalPower & 0x80) {
+						state.PedalPower = pedalPower & 0x7F;
+						state.RightPedalPower = state.PedalPower;
+						state.LeftPedalPower = 100 - state.RightPedalPower;
+					} else {
+						state.PedalPower = pedalPower & 0x7F;
+						state.RightPedalPower = undefined;
+						state.LeftPedalPower = undefined;
+					}
 				} else {
-					state.PedalPower = pedalPower & 0x7F;
+					state.PedalPower = undefined;
 					state.RightPedalPower = undefined;
 					state.LeftPedalPower = undefined;
 				}
-			} else {
-				state.PedalPower = undefined;
-				state.RightPedalPower = undefined;
-				state.LeftPedalPower = undefined;
+				const cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+				if (cadence !== 0xFF) {
+					state.Cadence = cadence;
+				} else {
+					state.Cadence = undefined;
+				}
+				state.AccumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+				state.Power = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 			}
-			// When rider stops pedaling, Stages power meter will keep sending the last non-zero
-			// data for power and cadence, even though the cranks are no longer spinning.
-			// Rely on AccumulatedPower to detect and zero these values: 
-			// If AccumulatedPower(N) == AccumulatedPower(N-1), then the rider is not pedaling
-			const cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
-			const accumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
-			const staleData = accumulatedPower == state.AccumulatedPower;
-			if (cadence !== 0xFF) {
-				state.Cadence = staleData ? 0 : cadence;
-			} else {
-				state.Cadence = undefined;
+			else if ((eventTime - oldEventTime) >= 5000) {
+				console.log("====== resetting value");
+				// Force power and candence to zero
+				state.Cadence = 0;
+				state.Power = 0;
 			}
-			state.Power = staleData ? 0 : data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
-			state.AccumulatedPower = accumulatedPower;
+			break;
+		}
+		case 0x12: { // standard crankk torque
+			// console.log("0x12");
 			break;
 		}
 		case 0x20: { // crank torque frequency
