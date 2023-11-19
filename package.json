@@ -19,7 +19,8 @@
 	"scripts": {
 		"test": "jest --coverage",
 		"build": "tsc",
-		"dev": "tsc --watch"
+		"dev": "tsc --watch",
+		"prepare": "npm run build"
 	},
 	"files": [
 		"lib/"
