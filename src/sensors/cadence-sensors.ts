@@ -108,7 +108,7 @@ function updateState(state: CadenceSensorState, data: Buffer) {
     const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
     switch (page & ~TOGGLE_MASK) { //check the new pages and remove the toggle bit
         case 1: { // cumulative operating time
-            // decode the cumulative operating time
+            // Decode the cumulative operating time
             state.OperatingTime = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
             state.OperatingTime |= data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2) << 8;
             state.OperatingTime |= data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3) << 16;
@@ -116,16 +116,16 @@ function updateState(state: CadenceSensorState, data: Buffer) {
             break;
         }
         case 2: { // manufacturer id
-            // decode the Manufacturer ID
+            // Decode the Manufacturer ID
             state.ManId = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
-            // decode the 4 byte serial number
+            // Decode the 4 byte serial number
             state.SerialNumber = state.DeviceID;
             state.SerialNumber |= data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 2) << 16;
             state.SerialNumber >>>= 0;
             break;
         }
         case 3: { // product id
-            // decode HW version, SW version, and model number
+            // Decode HW version, SW version, and model number
             state.HwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
             state.SwVersion = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
             state.ModelNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
@@ -168,7 +168,7 @@ function updateState(state: CadenceSensorState, data: Buffer) {
             }
         }
         case 0: { // default or unknown page
-            // get old state for calculating cumulative values
+            // Det old state for calculating cumulative values
             //
             // Older devices based on accelerometers that transmit page 0 instead of page 5
             // will not set the cadence to zero when the pedal stops moving. Also, these
