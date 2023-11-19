@@ -1,7 +1,7 @@
 {
 	"name": "incyclist-ant-plus",
-	"version": "0.2.0",
-	"description": "Incyclist library for ANT+ - originally forked from longhorn/ant-plus",
+	"version": "0.0.1",
+	"description": "Library for ANT+, forket from Incyclist/ant-plus",
 	"dependencies": {
 		"queue-fifo": "^0.2.6"
 	},
@@ -30,13 +30,12 @@
 		"lib": "./src"
 	},
 	"keywords": [
-		"Incyclist",
 		"ANT",
 		"ANT+"
 	],
 	"author": {
-		"name": "Guido Doumen",
-		"email": "incyclist@doumen-laumen.de"
+		"name": "Eduardo Abe",
+		"email": "eabe.mobile@gmail.com"
 	},
 	"license": "MIT",
 	"engines": {
@@ -44,7 +43,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/incyclist/ant-plus.git"
+		"url": "https://github.com/edabe/incyclist-ant-plus.git"
 	},
-	"bugs": "https://github.com/incyclist/ant-plus/issues"
+	"bugs": "https://github.com/edabe/incyclist-ant-plus/issues"
 }
