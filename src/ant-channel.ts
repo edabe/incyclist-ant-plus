@@ -23,7 +23,7 @@ export default class Channel  extends EventEmitter implements IChannel {
     protected isWriting: boolean = false;
     protected messageQueue: MessageInfo[] = []
     protected props: ChannelProps
-    protected attachedSensor: ISensor;
+    protected attachedSensor: Map<number,ISensor> = new Map<number,ISensor>();
     protected ackErrorCount: number = 0;
 
     constructor( channelNo:number, device:IAntDevice, props?:ChannelProps) {
@@ -35,9 +35,9 @@ export default class Channel  extends EventEmitter implements IChannel {
 
     onDeviceData(profile: string, deviceID: number, deviceState: any) {
         if (this.isScanner) {
-            this.emit('detected',profile, deviceID)            
+            this.emit('detected', profile, deviceID);
         }
-        this.emit('data', profile, deviceID, deviceState)
+        this.emit('data', profile, deviceID, deviceState);
     }
 
     getChannelNo(): number {
@@ -135,48 +135,49 @@ export default class Channel  extends EventEmitter implements IChannel {
     }
 
     async restartSensor(): Promise<boolean> {
-        if (!this.isSensor || !this.attachedSensor)
+        if (!this.isSensor || !this.attachedSensor.size)
             return true;
 
-        this.flush()
+        this.flush();
 
         await this.closeChannel({restart:true});
-        const sensor = this.attachedSensor;
 
+        // Hold all sensors
+        const allSensors = [...this.attachedSensor.values()];
 
-        let to;
-        try {
-            to = setTimeout( ()=>{ throw new Error('timeout')},START_TIMEOUT)
+        this.attachedSensor.forEach((sensor) => {
+            this.detach(sensor);
+        });
 
-            const {type,transmissionType,timeout,frequency,period} = sensor.getChannelConfiguration();
-            const deviceID = sensor.getDeviceID();
-            const deviceType = sensor.getDeviceType();
-
-            await this.sendMessage(Messages.assignChannel(this.channelNo, type));
-            await this.sendMessage(Messages.setDevice(this.channelNo, deviceID, deviceType, transmissionType));
-            await this.sendMessage(Messages.searchChannel(this.channelNo, timeout));
-            await this.sendMessage(Messages.setFrequency(this.channelNo, frequency));
-            await this.sendMessage(Messages.setPeriod(this.channelNo, period));
-            await this.sendMessage(Messages.libConfig(this.channelNo, 0xE0));
-            await this.sendMessage(Messages.openChannel(this.channelNo));
-
-            if (to) clearTimeout(to)
-            this.attach(sensor)
-            
-            return true	
-        }
-        catch(err) {
-            console.log(err)
-            if (to) clearTimeout(to)
-            return false;
-        }
+        allSensors.forEach(async (sensor) => {
+            const to = setTimeout(() => { throw new Error('timeout'); }, START_TIMEOUT);
+            try {
+                const { type, transmissionType, timeout, frequency, period } = sensor.getChannelConfiguration();
+                const deviceID = sensor.getDeviceID();
+                const deviceType = sensor.getDeviceType();
+    
+                await this.sendMessage(Messages.assignChannel(this.channelNo, type));
+                await this.sendMessage(Messages.setDevice(this.channelNo, deviceID, deviceType, transmissionType));
+                await this.sendMessage(Messages.searchChannel(this.channelNo, timeout));
+                await this.sendMessage(Messages.setFrequency(this.channelNo, frequency));
+                await this.sendMessage(Messages.setPeriod(this.channelNo, period));
+                await this.sendMessage(Messages.libConfig(this.channelNo, 0xE0));
+                await this.sendMessage(Messages.openChannel(this.channelNo));
+    
+                this.attach(sensor);
+            }
+            catch(err) {
+                console.log(err);
+            }
+            clearTimeout(to);
+        });
     }
 
     protected async closeChannel(props:{restart?:boolean}={}): Promise<void> {
         const {restart} = props||{}
 
         return new Promise ( resolve => {
-            const onStatusUpdate = async (status)=> {
+            const onStatusUpdate = async (data, status)=> {
                 if (status.msg===1 && status.code===Constants.EVENT_CHANNEL_CLOSED ) {
                     await this.sendMessage(Messages.unassignChannel(this.channelNo));
                     if (!restart)
@@ -191,18 +192,18 @@ export default class Channel  extends EventEmitter implements IChannel {
         })
     }
 
-    attach(sensor:ISensor): any {
-        this.attachedSensor = sensor;
+    attach(sensor:ISensor): void {
+        this.attachedSensor.set(sensor.getDeviceID(), sensor);
         sensor.setChannel(this)
-        this.on('message', (data) => {sensor.onMessage(data)})
-        this.on('status', (status,data) => {sensor.onEvent(data)})
+        this.on('message', sensor.onMessage);
+        this.on('status', sensor.onEvent);
     }
 
-    detach(sensor:ISensor){
-        this.attachedSensor = null;
-        sensor.setChannel(null)
-        this.off('message', (data) => {sensor.onMessage(data)})
-        this.off('status', (status,data) => {sensor.onEvent(data)})
+    detach(sensor:ISensor): void {
+        this.attachedSensor.delete(sensor.getDeviceID());
+        sensor.setChannel(undefined);
+        this.off('message', sensor.onMessage);
+        this.off('status', sensor.onEvent);
     }
 
 
@@ -251,7 +252,7 @@ export default class Channel  extends EventEmitter implements IChannel {
                     code: data.readUInt8(5),
                 };
     
-                this.emit('status', status, data);
+                this.emit('status', data, status);
 
                 if (status.msg!==1) {	// We have a response to the previous message
                     if (prevMsgId===status.msg)
