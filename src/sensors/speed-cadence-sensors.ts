@@ -6,27 +6,21 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class SpeedCadenceSensorState {
-    constructor(deviceID: number) {
-        this.DeviceID = deviceID;
-    }
-
-    DeviceID: number;
-    ManId?: number;
-
+export class SpeedCadenceSensorState extends SensorState {
+    // Common to all pages
     CadenceEventTime: number;
     CumulativeCadenceRevolutionCount: number;
     SpeedEventTime: number;
     CumulativeSpeedRevolutionCount: number;
+
+    // Data Page 0 - 
+    _CadenceUpdateTime: number = Date.now();
+    _SpeedUpdateTime: number = Date.now();
     CalculatedCadence: number;
     CalculatedDistance: number;
     CalculatedSpeed: number;
-    EventTime: number;
-
-    Rssi: number;
-    Threshold: number;
 }
 
 const DEVICE_TYPE = 0x79;
@@ -47,7 +41,7 @@ export default class SpeedCadenceSensor extends Sensor implements ISensor {
         return PROFILE;
     }
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
     getChannelConfiguration(): ChannelConfiguration {
         return { 
@@ -91,10 +85,8 @@ export default class SpeedCadenceSensor extends Sensor implements ISensor {
             case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
             case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
             case Constants.MESSAGE_CHANNEL_BURST_DATA:
-                const oldHash = this.hashObject(this.states[deviceID]);
                 updateState(this, this.states[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID]);
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
                 break;
@@ -105,23 +97,38 @@ export default class SpeedCadenceSensor extends Sensor implements ISensor {
 }
 
 function updateState(sensor: SpeedCadenceSensor, state: SpeedCadenceSensorState, data: Buffer) {
+	state._RawData = data;
     // Page 0 is the only page defined for the combined speed / cadence sensor
-    // Get old state for calculating cumulative values
-    const oldEventTime = state.EventTime;
+    // Stopped wheel and crank are detected by tracking the number of repeated events within a 
+    // given period of time
+
+    const oldCadenceUpdateTime = state._CadenceUpdateTime;
+    const oldSpeedUpdateTime = state._SpeedUpdateTime;
     const oldCadenceTime = state.CadenceEventTime;
     const oldCadenceCount = state.CumulativeCadenceRevolutionCount;
     const oldSpeedTime = state.SpeedEventTime;
     const oldSpeedCount = state.CumulativeSpeedRevolutionCount;
+    const oldCalculatedCadence = state.CalculatedCadence;
 
-    const eventTime = Date.now();
+    let cadenceDelay = 125000 / oldCalculatedCadence; // progressive delay, more sensitive at higher cadences
+    let speedDelay = 3000;
+    const updateTime = Date.now();
     let cadenceTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA);
     const cadenceCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 2);
-    let speedEventTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+    let speedTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
     const speedRevolutionCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 
-    if (cadenceTime !== oldCadenceTime) {
+    if ((cadenceTime === oldCadenceTime) && (updateTime - oldCadenceUpdateTime >= cadenceDelay)) {
+        // Detected cadence coasting...
+        state.CalculatedCadence = 0;
+    }
+    else if ((speedTime === oldSpeedTime) && (updateTime - oldSpeedUpdateTime >= speedDelay)) {
+        // Detected wheel coasting...
+        state.CalculatedSpeed = 0;
+    }
+    else {
         // Calculate cadence
-        state.EventTime = eventTime;
+        state._CadenceUpdateTime = updateTime;
         state.CadenceEventTime = cadenceTime;
         state.CumulativeCadenceRevolutionCount = cadenceCount;
         if (oldCadenceTime > cadenceTime) {
@@ -132,32 +139,21 @@ function updateState(sensor: SpeedCadenceSensor, state: SpeedCadenceSensorState,
         if (!isNaN(cadence)) {
             state.CalculatedCadence = cadence;
         }
-    }
-    else if ((eventTime - oldEventTime) >= 5000) {
-        // Force cadence to zero
-        state.CalculatedCadence = 0;
-    }
-
-    if (speedEventTime !== oldSpeedTime) {
         // Calculate distance and speed
-        state.EventTime = eventTime;
-        state.SpeedEventTime = speedEventTime;
+        state._SpeedUpdateTime = updateTime;
+        state.SpeedEventTime = speedTime;
         state.CumulativeSpeedRevolutionCount = speedRevolutionCount;
-        if (oldSpeedTime > speedEventTime) {
+        if (oldSpeedTime > speedTime) {
             // Hit rollover value
-            speedEventTime += 1024 * 64;
+            speedTime += 1024 * 64;
         }
         // Distance in meters
         const distance = sensor.wheelCircumference * (speedRevolutionCount - oldSpeedCount);
         state.CalculatedDistance = distance;
         // Speed in meters/sec
-        const speed = (distance * 1024) / (speedEventTime - oldSpeedTime);
+        const speed = (distance * 1024) / (speedTime - oldSpeedTime);
         if (!isNaN(speed)) {
             state.CalculatedSpeed = speed;
         }
-    }
-    else if ((eventTime - oldEventTime) >= 5000) {
-        // Force cadence to zero
-        state.CalculatedSpeed = 0;
     }
 }

@@ -6,15 +6,9 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class BicyclePowerSensorState {
-	constructor(deviceID: number) {
-		this.DeviceID = deviceID;
-	}
-
-	DeviceID: number;
-
+export class BicyclePowerSensorState extends SensorState {
 	// Comon PWR
 	Cadence?: number = undefined;
 	CalculatedCadence?: number = undefined;
@@ -27,7 +21,7 @@ export class BicyclePowerSensorState {
 
 	// 0x10 page
 	_0x10_EventCount?: number = 0;
-	_0x10_EventTime?: number = Date.now();
+	_0x10_UpdateTime?: number = Date.now();
 	PedalPower?: number = undefined;
 	RightPedalPower?: number = undefined;
 	LeftPedalPower?: number = undefined;
@@ -35,51 +29,34 @@ export class BicyclePowerSensorState {
 
 	// 0x12 page
 	_0x12_EventCount?: number = 0;
-	_0x12_EventTime?: number = Date.now();
+	_0x12_UpdateTime?: number = Date.now();
 	CrankTicks?: number = 0;
 	AccumulatedCrankPeriod?: number = 0;
 	AccumulatedTorque?: number = 0;
 
 	// 0x20 page
 	_0x20_EventCount?: number = 0;
+	_0x20_EventRepeat?: number = 0;
 	Slope?: number = 0;
 	CrankTicksStamp?: number = 0;
 	TorqueTicksStamp?: number = 0;
-
-	// 0x50 page
-    ManId?: number = undefined;
-	SerialNumber?: number = undefined;
-
-	// 0x51 page
-	HwVersion?: number = undefined;
-	SwVersion?: number = undefined;
-	ModelNum?: number = undefined;
-
-	// 0x52 page
-	BatteryLevel?: number = undefined;
-	BatteryVoltage?: number = undefined;
-	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid' = 'Invalid';
-
-	// Scanner
-	Rssi?: number;
-	Threshold?: number;
 }
 
-const DEVICE_TYPE 	= 0x0B
-const PROFILE 		= 'PWR';
-const PERIOD		= 8182
+const DEVICE_TYPE = 0x0B;
+const PROFILE = 'PWR';
+const PERIOD = 8182;
 
 export default class BicyclePowerSensor extends Sensor implements ISensor {
 	private states: { [id: number]: BicyclePowerSensorState } = {};
 
 	getDeviceType(): number {
-		return DEVICE_TYPE
+		return DEVICE_TYPE;
 	}
 	getProfile(): Profile {
-		return PROFILE
+		return PROFILE;
 	}
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
 	getChannelConfiguration(): ChannelConfiguration {
 		return { 
@@ -88,10 +65,10 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 			timeout:Constants.TIMEOUT_NEVER,
 			period:PERIOD,
 			frequency:57
-		}
+		};
 	}
 	onEvent(data: Buffer) {
-		return
+		return;
 	}
 	onMessage(data:Buffer) {
 		const channel = this.getChannel()
@@ -120,10 +97,8 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-				const oldHash = this.hashObject(this.states[deviceID]);
 				updateState(this.states[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID]);
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
 				break;
@@ -134,6 +109,7 @@ export default class BicyclePowerSensor extends Sensor implements ISensor {
 }
 
 function updateState(state: BicyclePowerSensorState, data: Buffer) {
+	state._RawData = data;
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
 		case 0x01: { // calibration parameters
@@ -147,24 +123,54 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			break;
 		}
 		case 0x10: { // power only
-			// Stages power meter will keep sending the last non-zero value when there is 
-			// no power being applied to the cranks.
-			// To account for that, store the cadence event time only when data changes,
-			// and zero the cadence if the event time repeats for longer than 5 seconds
-			const oldEventTime = state._0x10_EventTime;
-			const oldEventCount = state._0x10_EventCount;
+			// According to the profile "Guidelines for Best Practice" section:
+			/**
+				Event-synchronous Updates
+				Since no wheel (crank) events are occurring, no updates occur. The last page 
+				is repeated until either a rotation event occurs or the unit shuts down. The 
+				display should recognize that an extended period of repeated messages indicates 
+				a stop or coasting. (For torque frequency sensors refer to section 13.7.)
+				It is recommended that event-synchronous power sensors self-detect coasting or 
+				stopped conditions and force an update to explicitly indicate this state to the
+				display.
 
+				Time-synchronous Updates
+				If the wheel (or crank) is not moving in a system with fixed interval updates,
+				the update count increases but the accumulated Wheel Ticks (crank ticks) and 
+				Accumulated Wheel (Crank) Period do not increase. The display should interpret
+				a zero increase in these values as a stop or coasting. For Power-only sensors 
+				(i.e. sensors that only send data page 0x10) a stop or coasting condition is 
+				indicated by the accumulated power remaining constant while the event updates 
+				continue to increment.
+				How and when the display handles these cases is up to the individual manufacturer.
+			 */
+			// Based on experimentation with a single-sided Stages power meter, when coasting it
+			// will repeat the last broadcast without updates to the event count. That makes me
+			// think that it is following the event-synchronous update method.
+			//
+			// This implementation relies on the accumulated power as recommended by the best
+			// practice, with a varying threshold based on cadence (the lower the cadence, the
+			// longer the delay is, to avoid zeroying the cadence when the crank is rotating
+			// slowly)
+			const oldUpdateTime = state._0x10_UpdateTime;
+			const oldEventCount = state._0x10_EventCount;
+			const oldAccumulatedPower = state.AccumulatedPower;
+			const oldCadence = state.Cadence | 62.5; // if cadence is undefined, assume 62.5
+
+			let delay = 125000 / oldCadence; // progressive delay, more sensitive at higher cadences
             const eventTime = Date.now();
 			const eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
-			let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
-			if (cadence === 0xFF) {
-				cadence = undefined;
-			}
-			let delay = 125000 / cadence ? cadence : 62.5; // progressive delay, more sensitive at higher cadences
-			if (oldEventCount !== eventCount) {
-				// Calculate power
-				state._0x10_EventTime = eventTime;
+			const accumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+			if ((oldAccumulatedPower === accumulatedPower) && (eventTime - oldUpdateTime >= delay)) {
+				// Detected coasting... 
+				state.Cadence = state.Cadence === undefined ? undefined : 0;
+				state.Power = 0;
+			} 
+			else if (oldEventCount !== eventCount) {
+				// Update data
+				state._0x10_UpdateTime = eventTime;
 				state._0x10_EventCount = eventCount;
+				state.AccumulatedPower = accumulatedPower;
 				const pedalPower = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
 				if (pedalPower !== 0xFF) {
 					if (pedalPower & 0x80) {
@@ -177,38 +183,37 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 						state.LeftPedalPower = undefined;
 					}
 				}
-				state.Cadence = cadence;
-				state.AccumulatedPower = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+				let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+				state.Cadence = cadence === 0xFF ? undefined : cadence;
 				state.Power = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
 			}
-			else if ((eventTime - oldEventTime) >= delay) {
-				// Force power and candence to zero
-				state.Cadence = 0;
-				state.Power = 0;
-			}
+			// else - I can't think of what could that be... do nothing
 			break;
 		}
 		case 0x12: { // standard crankk torque
-			// Stages power meter is event_synchronous and will only send new event data
-			// when a complete crank rotation happens. If the crank stops rotating, the
-			// same event is repeated, making it difficult to interpret a zero-cadence.
-			// To account for that, store the cadence event time only when data changes,
-			// and zero the cadence if the event time repeats for longer than 5 seconds
-			const oldEventTime = state._0x12_EventTime;
+			// See 0x10.
+			// Based on experimentation with a single-sided Stages power meter, when coasting it
+			// will repeat the last broadcast without updates to the event count. 
+			// For page 0x12, rely on event count to detect coasting.
+			const oldUpdateTime = state._0x12_UpdateTime;
 			const oldEventCount = state._0x12_EventCount;
 			const oldCrankTicks = state.CrankTicks;
 			const oldAccumulatedPeriod = state.AccumulatedCrankPeriod;
 			const oldAccumulatedTorque = state.AccumulatedTorque;
+			const oldCadence = state.Cadence | 62.5; // if cadence is undefined, assume 62.5
 
+			let delay = 125000 / oldCadence; // progressive delay, more sensitive at higher cadences
             const eventTime = Date.now();
 			let eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
-			let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
-			if (cadence === 0xFF) {
-				cadence = undefined;
+			if ((oldEventCount === eventCount) && (eventTime - oldUpdateTime >= delay)) {
+				// Detected coasting... 
+				state.Cadence = state.Cadence === undefined ? undefined : 0;
+				state.CalculatedTorque = 0;
+				state.CalculatedPower = 0;
+				state.CalculatedCadence = 0;
 			}
-			let delay = 125000 / cadence ? cadence : 62.5; // progressive delay, more sensitive at higher cadences
-			if (oldEventCount !== eventCount) {
-				state._0x12_EventTime = eventTime;
+			else {
+				state._0x12_UpdateTime = eventTime;
 				state._0x12_EventCount = eventCount;
 				if (oldEventCount > eventCount) {
 					// Detected rollover
@@ -220,7 +225,8 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 					// Detected rollover
 					crankTicks += 256;
 				}
-				state.Cadence = cadence;
+				let cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 3);
+				state.Cadence = cadence === 0xFF ? undefined : cadence;
 				let accumulatedPeriod = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
 				state.AccumulatedCrankPeriod = accumulatedPeriod
 				if (oldAccumulatedPeriod > accumulatedPeriod) {
@@ -244,16 +250,18 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 				state.CalculatedPower = angularVel * torque;
 				state.CalculatedCadence = 60 * rotationEvents / rotationPeriod;
 			}
-			else if ((eventTime - oldEventTime) >= delay) {
-				// Force power and candence to zero
-				state.Cadence = 0;
-				state.CalculatedTorque = 0;
-				state.CalculatedPower = 0;
-				state.CalculatedCadence = 0;
-			}
 			break;
 		}
 		case 0x20: { // crank torque frequency
+			// According to the profile documentation for crank torque frequency:
+			/**
+			    Cadence Time
+				When the user stops pedaling, the update event count field in broadcast messages 
+				does not increment. After receiving 12 messages with the same update event count 
+				(approximately 3 seconds), the receiving device should change the cadence and power
+				displays to zero.
+			 */
+			// Implement a way to count 12 repeating messages before detecting coasting.
 			const oldEventCount = state._0x20_EventCount;
 			const oldTimeStamp = state.CrankTicksStamp;
 			const oldTorqueTicksStamp = state.TorqueTicksStamp;
@@ -263,7 +271,13 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 			let timeStamp = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 5);
 			let torqueTicksStamp = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 7);
 
-			if (timeStamp !== oldTimeStamp && eventCount !== oldEventCount) {
+			if ((oldEventCount === eventCount) && (state._0x20_EventRepeat >= 12)) {
+				// Detected coasting... 
+				state.CalculatedTorque = 0;
+				state.CalculatedPower = 0;
+				state.CalculatedCadence = 0;
+			} 
+			else if (timeStamp !== oldTimeStamp && eventCount !== oldEventCount) {
 				state._0x20_EventCount = eventCount;
 				if (oldEventCount > eventCount) { //Hit rollover value
 					eventCount += 255;
@@ -293,6 +307,7 @@ function updateState(state: BicyclePowerSensorState, data: Buffer) {
 
 				state.CalculatedPower = torque * cadence * Math.PI / 30; // Watts
 			}
+			// else - I can't think of what could that be... do nothing
 			break;
 		}
         case 0x50: { // manufacturer's information

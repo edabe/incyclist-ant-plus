@@ -6,32 +6,22 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class CadenceSensorState {
-    constructor(deviceID: number) {
-        this.DeviceID = deviceID;
-    }
-
-    DeviceID: number;
-    ManId?: number;
-
+export class CadenceSensorState extends SensorState {
+    // Common to all pages
     CadenceEventTime: number;
     CumulativeCadenceRevolutionCount: number;
-    CalculatedCadence: number;
-    Motion?: boolean;
-    EventTime: number;
 
+    // Data Page 0 - Default or Unknown Page
+    _UpdateTime: number = Date.now();
+    CalculatedCadence: number = 0;
+
+    // Data Page 1 - Cumulative Operating Time
     OperatingTime?: number;
-    SerialNumber?: number;
-    HwVersion?: number;
-    SwVersion?: number;
-    ModelNum?: number;
-    BatteryVoltage?: number;
-    BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
-    
-    Rssi: number;
-    Threshold: number;
+
+    // Data Page 5 - Motion and Cadence        
+    Motion?: boolean = undefined;
 }
 
 const DEVICE_TYPE = 0x7a;
@@ -48,7 +38,7 @@ export default class CadenceSensor extends Sensor implements ISensor {
         return PROFILE;
     }
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
     getChannelConfiguration(): ChannelConfiguration {
         return { 
@@ -59,9 +49,9 @@ export default class CadenceSensor extends Sensor implements ISensor {
             frequency: 57
         };
     }
-    onEvent(data: Buffer) {
-        return;
-    }
+	onEvent(data: Buffer) {
+		return;
+	}
     onMessage(data: Buffer) {
         const channel = this.getChannel();
         if (!channel) return;
@@ -89,10 +79,8 @@ export default class CadenceSensor extends Sensor implements ISensor {
             case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
             case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
             case Constants.MESSAGE_CHANNEL_BURST_DATA:
-                const oldHash = this.hashObject(this.states[deviceID]);
                 updateState(this.states[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID])
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
                 break;
@@ -105,6 +93,7 @@ export default class CadenceSensor extends Sensor implements ISensor {
 const TOGGLE_MASK = 0x80;
 
 function updateState(state: CadenceSensorState, data: Buffer) {
+	state._RawData = data;
     const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
     switch (page & ~TOGGLE_MASK) { //check the new pages and remove the toggle bit
         case 1: { // cumulative operating time
@@ -162,49 +151,46 @@ function updateState(state: CadenceSensorState, data: Buffer) {
         case 5: { // motion and speed
             // NOTE: This code is untested
             state.Motion = (data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1) & 0x01) === 0x01;
-            if (!state.Motion) {
-                state.CalculatedCadence = 0;
-                break; // combining case 5 and case 1. If motion is 1 (stopped), break.
-            }
+            break; 
         }
-        case 0: { // default or unknown page
-            // Get old state for calculating cumulative values
-            //
-            // Older devices based on accelerometers that transmit page 0 instead of page 5
-            // will not set the cadence to zero when the pedal stops moving. Also, these
-            // devices struggle to calculate the cadence when it is below 30rpm (based on
-            // old Wahoo cadence sensor).
-            // To account for that, store the cadence event time only when data changes,
-            // and zero the cadence if the event time repeats for longer than 5 seconds
-            const oldEventTime = state.EventTime;
-            const oldCadenceTime = state.CadenceEventTime;
-            const oldCadenceCount = state.CumulativeCadenceRevolutionCount;
-
-            const eventTime = Date.now();
-            let cadenceTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
-            const cadenceCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
-
-            if (cadenceTime !== oldCadenceTime) {
-                // Calculate cadence
-                state.EventTime = eventTime;
-                state.CadenceEventTime = cadenceTime;
-                state.CumulativeCadenceRevolutionCount = cadenceCount;
-                if (oldCadenceTime > cadenceTime) {
-                    // Hit rollover value
-                    cadenceTime += 1024 * 64;
-                }
-                const cadence = (60 * (cadenceCount - oldCadenceCount) * 1024) / (cadenceTime - oldCadenceTime);
-                if (!isNaN(cadence)) {
-                    state.CalculatedCadence = cadence;
-                }
-            }
-            else if ((eventTime - oldEventTime) >= 5000) {
-                // Force cadence to zero
-                state.CalculatedCadence = 0;
-            }
+        default: // default or unknown page (page 0)
             break;
+    }
+    // Outside of switch: handle common data to all pages
+    // Older devices based on accelerometers that transmit page 0 instead of page 5 are
+    // harder to work with - it is difficult to identify when the crank stopped rotating.
+    // Stopped crank is detected by tracking the number of repeated events within a 
+    // variable period of time
+    const oldUpdateTime = state._UpdateTime;
+    const oldCadenceTime = state.CadenceEventTime;
+    const oldCadenceCount = state.CumulativeCadenceRevolutionCount;
+    const oldCalculatedCadence = state.CalculatedCadence;
+
+    let delay = 125000 / oldCalculatedCadence; // progressive delay, more sensitive at higher cadences
+    const eventTime = Date.now();
+    let cadenceTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+    const cadenceCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+
+    if ((cadenceTime === oldCadenceTime) && (eventTime - oldUpdateTime >= delay)) {
+        // Detected coasting...
+        state.CalculatedCadence = 0;
+    }
+    else if (state.Motion !== undefined && !state.Motion) {
+        // Motion exists and is false
+        state.CalculatedCadence = 0;
+    }
+    else {
+        // Calculate cadence
+        state._UpdateTime = eventTime;
+        state.CadenceEventTime = cadenceTime;
+        state.CumulativeCadenceRevolutionCount = cadenceCount;
+        if (oldCadenceTime > cadenceTime) {
+            // Hit rollover value
+            cadenceTime += 1024 * 64;
         }
-        default:
-            break;
+        const cadence = (60 * (cadenceCount - oldCadenceCount) * 1024) / (cadenceTime - oldCadenceTime);
+        if (!isNaN(cadence)) {
+            state.CalculatedCadence = cadence;
+        }
     }
 }

@@ -6,20 +6,19 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class FitnessEquipmentSensorState {
-	constructor(deviceID: number) {
-		this.DeviceID = deviceID;
-	}
+export class FitnessEquipmentSensorState extends SensorState {
 
-	DeviceID: number;
-	ManId?: number;
-
+	// Data Page 1 (0x01) - Calibration Request and Response Page
 	Temperature?: number;
 	ZeroOffset?: number;
 	SpinDownTime?: number;
 
+	// Data Page 2 (0x02) - Calibration in Progress
+	// Not supported
+
+	// Data Page 16 (0x10) - General FE Data
 	EquipmentType?: 'Treadmill' | 'Elliptical' | 'StationaryBike' | 'Rower' | 'Climber' | 'NordicSkier' | 'Trainer' | 'General';
 	ElapsedTime?: number;
 	Distance?: number;
@@ -29,37 +28,71 @@ export class FitnessEquipmentSensorState {
 	HeartRateSource?: 'HandContact' | 'EM' | 'ANT+';
 	State?: 'OFF' | 'READY' | 'IN_USE' | 'FINISHED';
 
+	// Date Page 17 (0x11) - General Settings Page
 	CycleLength?: number;
 	Incline?: number;
 	Resistance?: number;
 
+	// Data Page 18 (0x12) - General FE Metabolic Data
 	METs?: number;
 	CaloricBurnRate?: number;
 	Calories?: number;
 
-	_EventCount0x19?: number;
-	Cadence?: number;
-	AccumulatedPower?: number;
-	InstantaneousPower?: number;
-	AveragePower?: number;
-	TrainerStatus?: number;
-	TargetStatus?: 'OnTarget' | 'LowSpeed' | 'HighSpeed';
+	// Data Page 19 (0x13) - Specific Treadmil Data
+	// Not supported
 
-	SerialNumber?: number;
-	HwVersion?: number;
-	SwVersion?: number;
-	ModelNum?: number;
+	// Data Page 20 (0x14) - Specific Elliptical Data
+	// Not supported
 
+	// Data Page 22 (0x16) - Specific Rower Data
+	// Not supported
+
+	// Data Page 23 (0x17) - Specific Climber Data
+	// Not supported
+
+	// Data Page 24 (0x18) - Specific Nordic Skier Data
+	// Not supported
+
+	// Data Page 25 (0x19) - Specific Trainer/Stationary Bike Data
+	_0x19_EventCount?: number;
+	_0x19_Cadence?: number;
+	_0x19_AccumulatedPower?: number;
+	_0x19_InstantaneousPower?: number;
+	_0x19_AveragePower?: number;
+	_0x19_TrainerStatus?: number;
+	_0x19_TargetStatus?: 'OnTarget' | 'LowSpeed' | 'HighSpeed';
+
+	// Data Page 26 (0x1A) - Specific Trainer Torque Data
+	// Not supported
+
+	// Data Page 48 (0x30) - Basic Resistance
+	// Not supported
+
+	// Data Page 49 (0x31) - Target Power
+	// Not supported
+
+	// Data Page 50 (0x32) - Wind Resistance
+	// Not supported
+
+	// Data Page 51 (0x33) - Track Resistance
+	// Not supported
+
+	// Data Page 54 (0x36) - FE Capabilities
+	// Not supported
+
+	// Data Page 55 (0x37) - User Configuration
+	// Not supported
+
+	// Data Page 71 (0x47) - Command Status
+	// Not supported (mandatory)
+
+	// Data Page 86 (0x56) - ???
 	PairedDevices: any[] = [];
-	RawData : Buffer;
-
-	Rssi?: number;
-	Threshold?: number;
 }
 
-const DEVICE_TYPE 	= 0x11;
-const PROFILE 		= 'FE';
-const PERIOD		= 8192;
+const DEVICE_TYPE = 0x11;
+const PROFILE = 'FE';
+const PERIOD = 8192;
 
 export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 	private states: { [id: number]: FitnessEquipmentSensorState } = {};
@@ -110,10 +143,8 @@ export default class FitnessEquipmentSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-                const oldHash = this.hashObject(this.states[deviceID]);
                 updateState(this.states[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID]);
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
 				break;
@@ -369,17 +400,17 @@ function resetState(state: FitnessEquipmentSensorState) {
 	delete state.METs;
 	delete state.CaloricBurnRate;
 	delete state.Calories;
-	delete state._EventCount0x19;
-	delete state.Cadence;
-	delete state.AccumulatedPower;
-	delete state.InstantaneousPower;
-	delete state.AveragePower;
-	delete state.TrainerStatus;
-	delete state.TargetStatus;
+	delete state._0x19_EventCount;
+	delete state._0x19_Cadence;
+	delete state._0x19_AccumulatedPower;
+	delete state._0x19_InstantaneousPower;
+	delete state._0x19_AveragePower;
+	delete state._0x19_TrainerStatus;
+	delete state._0x19_TargetStatus;
 }
 
 function updateState(state: FitnessEquipmentSensorState, data: Buffer) {
-	state.RawData = data;
+	state._RawData = data;
 
 	const page = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
 	switch (page) {
@@ -531,7 +562,7 @@ function updateState(state: FitnessEquipmentSensorState, data: Buffer) {
 			break;
 		}
 		case 0x19: {
-			const oldEventCount = state._EventCount0x19 || 0;
+			const oldEventCount = state._0x19_EventCount || 0;
 
 			let eventCount = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1);
 			const cadence = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 2);
@@ -541,37 +572,37 @@ function updateState(state: FitnessEquipmentSensorState, data: Buffer) {
 			const flagStateBF = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 7);
 
 			if (eventCount !== oldEventCount) {
-				state._EventCount0x19 = eventCount;
+				state._0x19_EventCount = eventCount;
 				if (oldEventCount > eventCount) { //Hit rollover value
 					eventCount += 255;
 				}
 			}
 
 			if (cadence !== 0xFF) {
-				state.Cadence = cadence;
+				state._0x19_Cadence = cadence;
 			}
 
 			if (power !== 0xFFF) {
-				state.InstantaneousPower = power;
+				state._0x19_InstantaneousPower = power;
 
-				const oldAccPower = (state.AccumulatedPower || 0) % 65536;
+				const oldAccPower = (state._0x19_AccumulatedPower || 0) % 65536;
 				if (accPower !== oldAccPower) {
 					if (oldAccPower > accPower) {
 						accPower += 65536;
 					}
 				}
-				state.AccumulatedPower = (state.AccumulatedPower || 0) + accPower - oldAccPower;
+				state._0x19_AccumulatedPower = (state._0x19_AccumulatedPower || 0) + accPower - oldAccPower;
 
-				state.AveragePower = (accPower - oldAccPower) / (eventCount - oldEventCount);
+				state._0x19_AveragePower = (accPower - oldAccPower) / (eventCount - oldEventCount);
 			}
 
-			state.TrainerStatus = trainerStatus;
+			state._0x19_TrainerStatus = trainerStatus;
 
 			switch (flagStateBF & 0x03) {
-				case 0: state.TargetStatus = 'OnTarget'; break;
-				case 1: state.TargetStatus = 'LowSpeed'; break;
-				case 2: state.TargetStatus = 'HighSpeed'; break;
-				default: delete state.TargetStatus; break;
+				case 0: state._0x19_TargetStatus = 'OnTarget'; break;
+				case 1: state._0x19_TargetStatus = 'LowSpeed'; break;
+				case 2: state._0x19_TargetStatus = 'HighSpeed'; break;
+				default: delete state._0x19_TargetStatus; break;
 			}
 
 			switch ((flagStateBF & 0x70) >> 4) {

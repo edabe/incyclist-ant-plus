@@ -6,37 +6,28 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class HeartRateSensorState {
-	constructor(deviceID: number) {
-		this.DeviceID = deviceID;
-	}
-
-	DeviceID: number;
-	ManId?: number;
-
+export class HeartRateSensorState extends SensorState {
+	// Common to all pages
 	BeatTime: number;
 	BeatCount: number;
 	ComputedHeartRate: number;
+	
+	// Data Page 1 - Cumulative Operating Time
+	OperatingTime?: number;
+
+	// Data Page 4 - Measured Time 
 	PreviousBeat?: number;
+
+	// Data Page 5 - ???
 	IntervalAverage?: number;
 	IntervalMax?: number;
 	SessionAverage?: number;
+
+	// Data Page 6 - ???
 	SupportedFeatures?: number;
 	EnabledFeatures?: number;
-
-	OperatingTime?: number;
-	SerialNumber?: number;
-	HwVersion?: number;
-	SwVersion?: number;
-	ModelNum?: number;
-	BatteryLevel?: number;
-	BatteryVoltage?: number;
-	BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
-
-	Rssi?: number;
-	Threshold?: number;
 }
 
 const DEVICE_TYPE = 120;
@@ -48,13 +39,13 @@ export default class HeartRateSensor extends Sensor implements ISensor {
 	protected pages: { [id: number]: Page } = {};
 
 	getDeviceType(): number {
-		return DEVICE_TYPE
+		return DEVICE_TYPE;
 	}
 	getProfile(): Profile {
-		return PROFILE
+		return PROFILE;
 	}
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
 	getChannelConfiguration(): ChannelConfiguration {
 		return { 
@@ -73,13 +64,10 @@ export default class HeartRateSensor extends Sensor implements ISensor {
 		if (!channel) return;
 
 		const channelNo = channel.getChannelNo()
-		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM) !== channelNo) {
-			return;
-		}
-
 		const deviceID = data.readUInt16LE(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 1);
 		const deviceType = data.readUInt8(Messages.BUFFER_INDEX_EXT_MSG_BEGIN + 3);
-		if (deviceType !== this.getDeviceType()) {
+
+		if (data.readUInt8(Messages.BUFFER_INDEX_CHANNEL_NUM) !== channelNo || deviceType !== this.getDeviceType()) {
 			return;
 		}
 
@@ -102,10 +90,8 @@ export default class HeartRateSensor extends Sensor implements ISensor {
 			case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
 			case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
 			case Constants.MESSAGE_CHANNEL_BURST_DATA:
-                const oldHash = this.hashObject(this.states[deviceID]) + this.hashObject(this.pages[deviceID]);
                 updateState(this.states[deviceID], this.pages[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID]) + this.hashObject(this.pages[deviceID]);
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
 				break;

@@ -6,33 +6,23 @@
 import { ChannelConfiguration, ISensor, Profile } from '../types';
 import { Constants } from '../consts';
 import { Messages } from '../messages';
-import Sensor from './base-sensor';
+import { Sensor, SensorState } from './base-sensor';
 
-export class SpeedSensorState {
-    constructor(deviceID: number) {
-        this.DeviceID = deviceID;
-    }
-
-    DeviceID: number;
-    ManId?: number;
-
+export class SpeedSensorState extends SensorState {
+    // Common to all pages
     SpeedEventTime: number;
     CumulativeSpeedRevolutionCount: number;
+
+    // Data Page 0 - Default or Unknown Page
+    _UpdateTime: number 
     CalculatedDistance: number;
     CalculatedSpeed: number;
-    Motion?: boolean;
-    EventTime: number;
 
+    // Data Page 1 - Cumulative Operating Time
     OperatingTime?: number;
-    SerialNumber?: number;
-    HwVersion?: number;
-    SwVersion?: number;
-    ModelNum?: number;
-    BatteryVoltage?: number;
-    BatteryStatus?: 'New' | 'Good' | 'Ok' | 'Low' | 'Critical' | 'Invalid';
 
-    Rssi: number;
-    Threshold: number;
+    // Data Page 5 - Motion and Speed
+    Motion?: boolean = undefined;
 }
 
 const DEVICE_TYPE = 0x7b;
@@ -53,7 +43,7 @@ export default class SpeedSensor extends Sensor implements ISensor {
         return PROFILE;
     }
 	getDeviceID(): number {
-		return this.deviceID
+		return this.deviceID;
 	}
     getChannelConfiguration(): ChannelConfiguration {
         return {
@@ -97,10 +87,8 @@ export default class SpeedSensor extends Sensor implements ISensor {
             case Constants.MESSAGE_CHANNEL_BROADCAST_DATA:
             case Constants.MESSAGE_CHANNEL_ACKNOWLEDGED_DATA:
             case Constants.MESSAGE_CHANNEL_BURST_DATA:
-                const oldHash = this.hashObject(this.states[deviceID]);
                 updateState(this, this.states[deviceID], data);
-                const newHash = this.hashObject(this.states[deviceID]);
-                if ((this.deviceID === 0 || this.deviceID === deviceID) && oldHash !== newHash) {
+                if (this.deviceID === 0 || this.deviceID === deviceID) {
                     channel.onDeviceData(this.getProfile(), deviceID, this.states[deviceID]);
                 }
                 break;
@@ -113,6 +101,7 @@ export default class SpeedSensor extends Sensor implements ISensor {
 const TOGGLE_MASK = 0x80;
 
 function updateState(sensor: SpeedSensor, state: SpeedSensorState, data: Buffer) {
+	state._RawData = data;
     const pageNum = data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA);
     switch (pageNum & ~TOGGLE_MASK) { //check the new pages and remove the toggle bit
         case 1: { // cumulative operating time
@@ -171,54 +160,51 @@ function updateState(sensor: SpeedSensor, state: SpeedSensorState, data: Buffer)
         case 5: { // motion and speed
             // NOTE: This code is untested
             state.Motion = (data.readUInt8(Messages.BUFFER_INDEX_MSG_DATA + 1) & 0x01) === 0x01;
-            if (!state.Motion) {
-                state.CalculatedSpeed = 0;
-                break; // combining case 5 and case 1. If motion is 1 (stopped), break.
-            }
+            break; // combining case 5 and case 1. If motion is 1 (stopped), break.
         }
-        case 0: { // default or unknown page
-            // get old state for calculating cumulative values
-            //
-            // Older devices based on accelerometers that transmit page 0 instead of page 5
-            // will not set the speed to zero when the wheel stops turning. Also, these
-            // devices struggle to calculate the speed when it is moving too slow (based on
-            // old Wahoo speed sensor).
-            // To account for that, store the speed event time only when data changes,
-            // and zero the speed if the event time repeats for longer than 5 seconds
-            const oldEventTime = state.EventTime;
-            const oldSpeedTime = state.SpeedEventTime;
-            const oldSpeedCount = state.CumulativeSpeedRevolutionCount;
-
-            const eventTime = Date.now();
-            let speedTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
-            const speedCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
-
-            if (speedTime !== oldSpeedTime) {
-                // Calculate speed and distance
-                state.EventTime = eventTime;
-                state.SpeedEventTime = speedTime;
-                state.CumulativeSpeedRevolutionCount = speedCount;
-                if (oldSpeedTime > speedTime) {
-                    // Hit rollover value
-                    speedTime += 1024 * 64;
-                }
-                // Distance in meters
-                const distance = sensor.wheelCircumference * (speedCount - oldSpeedCount);
-                state.CalculatedDistance = distance;
-        
-                // Speed in meters/sec
-                const speed = (distance * 1024) / (speedTime - oldSpeedTime);
-                if (!isNaN(speed)) {
-                    state.CalculatedSpeed = speed;
-                }
-            }
-            else if ((eventTime - oldEventTime) >= 5000) {
-                // Force speed to zero
-                state.CalculatedSpeed = 0;
-            }
+        default: // default or unknown page (page 0)
             break;
+    }
+    // Outside of switch: handle common data to all pages
+    // Older devices based on accelerometers that transmit page 0 instead of page 5 are
+    // harder to work with - it is difficult to identify when the wheel stopped rotating.
+    // Stopped wheel is detected by tracking the number of repeated events within a 
+    // given period of time
+
+    const oldUpdateTime = state._UpdateTime;
+    const oldSpeedTime = state.SpeedEventTime;
+    const oldSpeedCount = state.CumulativeSpeedRevolutionCount;
+
+    let delay = 3000;
+    const eventTime = Date.now();
+    let speedTime = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 4);
+    const speedCount = data.readUInt16LE(Messages.BUFFER_INDEX_MSG_DATA + 6);
+
+    if ((speedTime === oldSpeedTime) && (eventTime - oldUpdateTime >= delay)) {
+        // Detected coasting...
+        state.CalculatedSpeed = 0;
+    }
+    else if (state.Motion !== undefined && !state.Motion) {
+        // Motion exists and is false
+        state.CalculatedSpeed = 0;
+    }
+    else {
+        // Calculate speed and distance
+        state._UpdateTime = eventTime;
+        state.SpeedEventTime = speedTime;
+        state.CumulativeSpeedRevolutionCount = speedCount;
+        if (oldSpeedTime > speedTime) {
+            // Hit rollover value
+            speedTime += 1024 * 64;
         }
-        default:
-            break;
+        // Distance in meters
+        const distance = sensor.wheelCircumference * (speedCount - oldSpeedCount);
+        state.CalculatedDistance = distance;
+
+        // Speed in meters/sec
+        const speed = (distance * 1024) / (speedTime - oldSpeedTime);
+        if (!isNaN(speed)) {
+            state.CalculatedSpeed = speed;
+        }
     }
 }
