@@ -6,5 +6,3 @@ export {Messages} from './messages'
 export * from './sensors'
 
 export {ChannelProps, IAntDevice, IChannel, ISensor, Profile} from './types'
-
-
