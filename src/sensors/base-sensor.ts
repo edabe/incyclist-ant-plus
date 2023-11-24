@@ -36,9 +36,8 @@ export abstract class Sensor implements ISensor {
     protected channel?: IChannel;
     protected sendTimeout: number;
 
-    constructor(deviceID:number=0, channel?:IChannel) {
+    constructor(deviceID:number=0) {
 		this.deviceID = Number(deviceID)
-        this.channel = channel
         this.sendTimeout = SEND_TIMEOUT
         // Bind 'this' to callbacks, so that it has the proper context
         // when called as a callback in the channel
