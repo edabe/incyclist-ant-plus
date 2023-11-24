@@ -2,6 +2,7 @@ import { Constants } from "./consts";
 import EventEmitter from "events";
 import { Messages } from "./messages";
 import { ChannelProps, IAntDevice, IChannel, ISensor } from "./types";
+import { SensorState } from "./sensors/base-sensor";
 
 export type MessageInfo = {
 	msgId: number;
@@ -33,7 +34,7 @@ export default class Channel  extends EventEmitter implements IChannel {
         this.props = props || {}
     }
 
-    onDeviceData(profile: string, deviceID: number, deviceState: any) {
+    onDeviceData(profile: string, deviceID: number, deviceState: SensorState) {
         if (this.isScanner) {
             this.emit('detected', profile, deviceID);
         }
